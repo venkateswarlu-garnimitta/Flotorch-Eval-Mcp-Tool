@@ -2,6 +2,8 @@
 
 Deploy the Flotorch Evaluation MCP Server as a **Docker Space** on Hugging Face.
 
+> **New to Hugging Face?** See **[DEPLOY_GUIDE.md](DEPLOY_GUIDE.md)** for a step-by-step guide from scratch.
+
 ## Prerequisites
 
 - Hugging Face account
