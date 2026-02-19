@@ -16,6 +16,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Production stage
 FROM python:3.11-slim-bookworm
 
+# Install git (required by ragas/GitPython)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user (UID 1000 required for Hugging Face Spaces)
 RUN useradd -m -u 1000 -s /bin/bash appuser
 
