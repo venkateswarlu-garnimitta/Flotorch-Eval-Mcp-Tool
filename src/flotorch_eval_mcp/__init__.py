@@ -1,0 +1,46 @@
+"""
+Flotorch Evaluation MCP Server.
+
+A high-performance MCP server for comprehensive LLM evaluation using the Flotorch platform.
+"""
+
+__version__ = "1.0.0"
+
+from flotorch_eval_mcp.config import (
+    EvaluationEngine,
+    EvaluationType,
+    get_flotorch_credentials,
+    get_metrics_for_evaluation_type,
+)
+from flotorch_eval_mcp.evaluator import (
+    KBRetrievalError,
+    LLMGenerationError,
+    generate_dataset_parallel,
+    generate_rag_dataset_parallel,
+    run_evaluation,
+)
+from flotorch_eval_mcp.utils import (
+    enrich_eval_results_with_gateway_metadata,
+    format_api_error,
+    format_evaluation_results,
+    validate_evaluation_items,
+    validate_ground_truth_data,
+)
+
+__all__ = [
+    "__version__",
+    "EvaluationEngine",
+    "EvaluationType",
+    "get_flotorch_credentials",
+    "get_metrics_for_evaluation_type",
+    "KBRetrievalError",
+    "LLMGenerationError",
+    "generate_dataset_parallel",
+    "generate_rag_dataset_parallel",
+    "run_evaluation",
+    "enrich_eval_results_with_gateway_metadata",
+    "format_api_error",
+    "format_evaluation_results",
+    "validate_evaluation_items",
+    "validate_ground_truth_data",
+]

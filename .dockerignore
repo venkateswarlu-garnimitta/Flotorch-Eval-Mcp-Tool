@@ -1,0 +1,61 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+*.egg
+.pytest_cache
+.coverage
+htmlcov
+.mypy_cache
+.ruff_cache
+
+# Virtual environments
+venv
+.venv
+env
+.env
+.env.*
+
+# IDE and editor
+.idea
+.vscode
+*.swp
+*.swo
+
+# Deployment and docs (exclude from image)
+deploy/
+*.md
+!README.md
+
+# Test and development
+tests
+test_*
+*_test.py
+.flake8
+pytest.ini
+
+# Deepeval cache
+.deepeval
+
+# Legacy root-level Python files (moved to src/flotorch_eval_mcp/)
+config.py
+evaluator.py
+server.py
+utils.py
+
+# Subfolder copy (use src/ package)
+flotorch-eval-mcp-server
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db

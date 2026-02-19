@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flotorch-eval-mcp"
+version = "1.0.0"
+description = "Flotorch Evaluation MCP Server - High-performance LLM evaluation using the Flotorch platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
