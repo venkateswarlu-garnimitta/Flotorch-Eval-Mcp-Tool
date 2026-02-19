@@ -9,8 +9,9 @@ flotorch>=3.1.0b1
 # Flotorch Evaluation
 flotorch-eval>=2.0.0
 
-# OpenTelemetry instrumentation
+# OpenTelemetry (required by flotorch SDK)
 opentelemetry-instrumentation-httpx>=0.58b0
+opentelemetry-exporter-otlp-proto-http>=1.20.0
 
 # Web framework (included with FastMCP but explicit for clarity)
 starlette>=0.37.0
