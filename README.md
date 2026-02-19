@@ -5,6 +5,8 @@ colorFrom: blue
 colorTo: indigo
 sdk: docker
 app_port: 7860
+# CPU basic may OOM (exit 137) - use cpu-upgrade in Space Settings
+suggested_hardware: cpu-upgrade
 ---
 
 # Flotorch Evaluation MCP Server

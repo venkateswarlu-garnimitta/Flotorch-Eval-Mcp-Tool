@@ -17,6 +17,8 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 ENV HOME=/home/appuser \
     PATH=/home/appuser/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    MALLOC_ARENA_MAX=2 \
     PORT=7860
 
 WORKDIR /app

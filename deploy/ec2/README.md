@@ -2,6 +2,8 @@
 
 Deploy the Flotorch Evaluation MCP Server on an AWS EC2 instance using Docker.
 
+> **For production deployment options (ASG, ECS, etc.)**, see **[DEPLOY_GUIDE.md](DEPLOY_GUIDE.md)**.
+
 ## Prerequisites
 
 - AWS account

@@ -34,7 +34,7 @@ A **Space** is a Hugging Face app that runs your code (like a small web app).
    | **Space name** | e.g. `flotorch-eval-mcp` |
    | **License** | e.g. MIT or Apache 2.0 |
    | **SDK** | Choose **Docker** |
-   | **Hardware** | **CPU basic** (free) |
+   | **Hardware** | **CPU upgrade** (required – CPU basic causes OOM/exit 137) |
    | **Visibility** | Public or Private |
 
 3. Click **Create Space**.
@@ -130,12 +130,23 @@ app_port: 7860
 
 ---
 
-## Part 5: Add Secrets (API Key)
+## Part 5: Upgrade Hardware (If You Get Exit 137)
+
+If your Space crashes with **Exit code 137** or "Container could not be located":
+
+1. Open your Space → **Settings**
+2. Go to **Space hardware**
+3. Change from **CPU basic** to **CPU upgrade** (32 GB RAM, ~$0.03/hr)
+4. Save – the Space will rebuild
+
+---
+
+## Part 6: Add Secrets (API Key)
 
 Your Flotorch API key must not be in the code. Use Hugging Face secrets.
 
 1. Open your Space URL.
-2. Click **Settings** (or the gear icon).
+2. Click **Settings** (gear icon).
 3. Go to **Variables and secrets** in the left sidebar.
 4. Add:
 
@@ -149,7 +160,7 @@ Your Flotorch API key must not be in the code. Use Hugging Face secrets.
 
 ---
 
-## Part 6: Dockerfile for Hugging Face
+## Part 7: Dockerfile for Hugging Face
 
 Hugging Face Spaces expect your app to listen on port **7860**.
 
@@ -160,7 +171,7 @@ Either approach works. No further changes needed if `PORT=7860` is set in Variab
 
 ---
 
-## Part 7: Wait for the Build and Check
+## Part 8: Wait for the Build and Check
 
 1. After pushing, Hugging Face builds your Docker image.
 2. Build status: **Building** → **Running**.
@@ -179,7 +190,7 @@ Either approach works. No further changes needed if `PORT=7860` is set in Variab
 
 ---
 
-## Part 8: Connect Your MCP Client
+## Part 9: Connect Your MCP Client
 
 Use this URL and headers in your MCP client:
 
@@ -209,6 +220,7 @@ Headers:
 
 | Problem | What to do |
 |---------|------------|
+| **Exit code 137** / "Container could not be located" | Out of memory (OOM). Go to **Settings → Space hardware** and change to **CPU upgrade** (32 GB RAM). CPU basic (16 GB) may not be enough for heavy ML dependencies. |
 | Build fails | Check logs and ensure `Dockerfile`, `requirements.txt`, `pyproject.toml`, and `src/` are present. |
 | "API key not found" | Add `FLOTORCH_API_KEY` as a **Secret** in Space Settings. |
 | Space sleeps or stops | Free Spaces sleep after inactivity. A new request will wake it. |

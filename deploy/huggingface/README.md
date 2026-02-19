@@ -92,6 +92,7 @@ Push your changes to the Space. Hugging Face will build and run the Docker conta
 | Issue                    | Solution                                                |
 |--------------------------|---------------------------------------------------------|
 | Build fails              | Check `requirements.txt` and Dockerfile paths           |
+| **Exit 137** / OOM       | Upgrade to **CPU upgrade** in Settings → Space hardware |
 | Port mismatch            | Set `PORT=7860` in Space Variables                     |
 | API key errors           | Add `FLOTORCH_API_KEY` as a **Secret** in Settings     |
 | Permission errors        | Ensure Dockerfile uses `USER appuser` (UID 1000)        |
