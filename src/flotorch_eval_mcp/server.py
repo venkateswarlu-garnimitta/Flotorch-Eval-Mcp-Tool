@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 
 # FastMCP imports
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -57,6 +58,8 @@ except ImportError as e:
     logger.warning(f"Failed to import heavy dependencies: {e}. Tool calls will return error messages.")
 
 # Create FastMCP server
+# Disable host-header validation to allow deployment behind reverse proxies
+# (e.g. Hugging Face Spaces, load balancers) where Host differs from origin
 mcp = FastMCP(
     "Flotorch Evaluation",
     instructions=(
@@ -66,6 +69,7 @@ mcp = FastMCP(
     ),
     json_response=True,
     streamable_http_path="/",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
