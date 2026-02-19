@@ -70,6 +70,7 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    stateless_http=True,  # Required for HF Spaces / load balancers: no session affinity across instances
 )
 
 
