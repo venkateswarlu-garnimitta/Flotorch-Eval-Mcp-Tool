@@ -1,3 +1,12 @@
+---
+title: Flotorch Evaluation MCP Server
+emoji: 📊
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+---
+
 # Flotorch Evaluation MCP Server
 
 A high-performance MCP server for comprehensive LLM evaluation using the Flotorch platform.
