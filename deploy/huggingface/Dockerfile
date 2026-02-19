@@ -23,12 +23,16 @@ ENV HOME=/home/appuser \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MALLOC_ARENA_MAX=2 \
+    DEEPEVAL_TELEMETRY_OPT_OUT=1 \
     PORT=7860
 
 WORKDIR /app
 
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+
+# Make /app writable for appuser (deepeval creates .deepeval here)
+RUN chown -R appuser:appuser /app
 
 USER appuser
 

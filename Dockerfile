@@ -26,6 +26,7 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 ENV HOME=/home/appuser \
     PATH=/home/appuser/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
+    DEEPEVAL_TELEMETRY_OPT_OUT=1 \
     PORT=8080
 
 WORKDIR /app
@@ -33,6 +34,9 @@ WORKDIR /app
 # Install runtime dependencies and package from builder wheels
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+
+# Make /app writable for appuser (deepeval creates .deepeval here)
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
