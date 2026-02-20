@@ -1,6 +1,7 @@
 """
-Configuration module for Flotorch Evaluation MCP Server.
-Handles environment variables, credentials, and metric configurations.
+Configuration for the Flotorch Evaluation MCP Server.
+
+Provides credential resolution, evaluation types, and metric selection.
 """
 
 import os
@@ -67,7 +68,9 @@ def get_flotorch_credentials(headers: Optional[dict] = None) -> Tuple[str, str]:
     return api_key, base_url
 
 
-def get_metrics_for_evaluation_type(evaluation_type: str, metric_key_class) -> list:
+def get_metrics_for_evaluation_type(
+    evaluation_type: str, metric_key_class: type
+) -> list:
     """
     Return appropriate metrics based on evaluation type.
 

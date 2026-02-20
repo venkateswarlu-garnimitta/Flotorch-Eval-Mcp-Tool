@@ -1,5 +1,7 @@
 """
 Utility functions for the Flotorch Evaluation MCP Server.
+
+Provides error formatting, prompt building, validation, and result formatting.
 """
 
 import re
@@ -7,49 +9,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def format_api_error(exc: Exception) -> str:
-    """
-    Extract a clear user-facing message from API/gateway errors.
-    Handles common patterns: ERROR_MODEL_NOT_FOUND, 500 JSON, etc.
-    """
+    """Extract a clear user-facing message from API or gateway errors."""
     msg = str(exc).strip()
     if not msg:
         return f"API error: {type(exc).__name__}"
-    # Extract from [500] {"error":{"message":"ERROR_MODEL_NOT_FOUND",...}}
-    m = re.search(r'"message"\s*:\s*"([^"]+)"', msg)
-    if m:
-        return m.group(1)
+
+    match = re.search(r'"message"\s*:\s*"([^"]+)"', msg)
+    if match:
+        return match.group(1)
+
     if "ERROR_MODEL_NOT_FOUND" in msg:
-        return "Model not found. Check that the model ID exists and is available on the gateway."
-    if "401" in msg or "unauthorized" in msg.lower() or "api" in msg.lower() and "key" in msg.lower():
-        return "API key invalid or missing. Check X-Flotorch-Api-Key header or FLOTORCH_API_KEY."
+        return "Model not found. Check that the model ID exists on the gateway."
+    if "401" in msg or "unauthorized" in msg.lower():
+        return "API key invalid or missing. Set X-Flotorch-Api-Key or FLOTORCH_API_KEY."
+    if "api" in msg.lower() and "key" in msg.lower():
+        return "API key invalid or missing. Set X-Flotorch-Api-Key or FLOTORCH_API_KEY."
     if "404" in msg or "not found" in msg.lower():
         return "Resource not found. Check knowledge base ID, model ID, or base URL."
     if "500" in msg or "internal" in msg.lower():
         return f"Gateway error: {msg[:200]}"
+
     return msg[:500]
-
-
-def headers_to_metadata(headers: Any) -> Dict[str, Any]:
-    """
-    Convert HTTP headers to metadata dict for gateway metrics.
-
-    Args:
-        headers: HTTP headers object or dict
-
-    Returns:
-        Dict with lowercase keys for consistent gateway metrics
-    """
-    if headers is None:
-        return {}
-
-    try:
-        if hasattr(headers, "items"):
-            return {str(k).lower(): v for k, v in headers.items()}
-        elif hasattr(headers, "get"):
-            return {str(k).lower(): headers.get(k) for k in headers.keys()}
-        return {}
-    except Exception:
-        return {}
 
 
 def llm_response_to_metadata(response: Any) -> Dict[str, Any]:
@@ -108,38 +88,40 @@ def create_prompt_messages(
     system_prompt: str,
     user_prompt_template: str,
     question: str,
-    context: Optional[List[str]] = None
+    context: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
     """
     Build messages list for LLM inference.
 
+    Ensures the template includes {question}; appends it if missing so the model
+    always receives the question. For RAG, {context} must be present.
+
     Args:
-        system_prompt: System prompt for the LLM
-        user_prompt_template: Template with {context} and {question} placeholders
-        question: User question
-        context: Optional list of context strings
+        system_prompt: System prompt for the LLM.
+        user_prompt_template: Template with {context} and {question} placeholders.
+        question: The user question.
+        context: Optional list of context strings for RAG.
 
     Returns:
-        List of message dicts with role and content
+        List of message dicts with role and content.
     """
+    template = (user_prompt_template or "").strip()
+    if "{question}" not in template:
+        template = template + "\n\nQuestion: {question}" if template else "Question: {question}"
+    if context and "{context}" not in template:
+        template = "Context:\n{context}\n\n" + template
+
     context_text = ""
-
     if context:
-        if isinstance(context, list):
-            context_text = "\n\n---\n\n".join(context)
-        elif isinstance(context, str):
-            context_text = context
+        context_text = "\n\n---\n\n".join(
+            str(c) for c in (context if isinstance(context, list) else [context])
+        )
 
-    # Replace placeholders in template
-    user_content = (
-        user_prompt_template
-        .replace("{context}", context_text)
-        .replace("{question}", question)
-    )
+    user_content = template.replace("{context}", context_text).replace("{question}", question)
 
     return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content}
+        {"role": "system", "content": (system_prompt or "").strip() or "You are a helpful assistant."},
+        {"role": "user", "content": user_content},
     ]
 
 

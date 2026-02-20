@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-Flotorch Evaluation MCP Server using FastMCP.
+Flotorch Evaluation MCP Server.
 
-A robust MCP tool for evaluating LLMs with support for:
-- Standard LLM evaluation with pre-computed answers
-- RAG evaluation with knowledge base retrieval
-- Multi-model comparison experiments
-- Gateway metrics and per-query results
-- Parallel processing for speed
+Exposes evaluation tools via FastMCP: evaluate_llm, evaluate_rag,
+compare_llm_models, and list_evaluation_metrics.
 """
 
 import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # FastMCP imports
 from mcp.server.fastmcp import Context, FastMCP
@@ -242,8 +238,8 @@ async def _evaluate_single_model(
         return {"error": format_api_error(e)}
 
 
-def _extract_headers_from_context(ctx: Context) -> Dict[str, str]:
-    """Extract HTTP headers from context as lowercase dict."""
+def _extract_headers_from_context(ctx: Optional[Context]) -> Dict[str, str]:
+    """Extract HTTP headers from request context as lowercase dict."""
     if not ctx:
         return {}
 
@@ -389,7 +385,7 @@ async def evaluate_rag(
         evaluation_engine: Evaluation engine - "deepeval" or "ragas" (default: deepeval)
         query_level_metrics: Include per-query breakdown (default: false)
         gateway_metrics: Include gateway metrics (input/output tokens) (default: false)
-        max_concurrent: Maximum concurrent operations (default: 5)
+        max_concurrent: Maximum concurrent operations (default: 10)
 
     Returns:
         Formatted evaluation report with RAG metrics
@@ -522,7 +518,7 @@ async def compare_llm_models(
         evaluation_engine: "deepeval" or "ragas" (default: deepeval)
         query_level_metrics: Include per-query breakdown (default: false)
         gateway_metrics: Include gateway metrics (input/output tokens) (default: false)
-        max_concurrent: Maximum concurrent calls per model (default: 5)
+        max_concurrent: Maximum concurrent calls per model (default: 10)
 
     Returns:
         Comparison report showing metrics across models

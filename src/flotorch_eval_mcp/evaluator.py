@@ -1,6 +1,8 @@
 """
-Core evaluation workflows for Flotorch Evaluation MCP Server.
-Handles dataset generation, parallel processing, and evaluation execution.
+Evaluation workflows for the Flotorch Evaluation MCP Server.
+
+Handles dataset generation (normal and RAG), parallel processing,
+and evaluation execution via flotorch-eval.
 """
 
 import asyncio
@@ -19,7 +21,8 @@ from flotorch_eval_mcp.utils import (
 )
 
 
-def _apply_deepeval_patch():
+def _apply_deepeval_patch() -> None:
+    """Apply CacheConfig patch to prevent DeepEval disk writes."""
     try:
         from deepeval.evaluate import CacheConfig
         import flotorch_eval.llm_eval.core.deepeval_evaluator as mod
@@ -374,17 +377,13 @@ async def run_evaluation(
         metrics=metrics,
     )
 
-    # Filter out items where generation failed or answers are invalid
     valid_items = []
     invalid_count = 0
-
     for item in evaluation_items:
-        answer = item.generated_answer
-        answer_str = str(answer).strip()
+        answer_str = str(item.generated_answer or "").strip()
         is_invalid = (
-            not answer
+            not answer_str
             or answer_str.startswith("Error:")
-            or len(answer_str) == 0
             or answer_str.lower() in ("none", "null", "nan")
         )
         if is_invalid:

@@ -1,7 +1,7 @@
 """
 Flotorch Evaluation MCP Server.
 
-A high-performance MCP server for comprehensive LLM evaluation using the Flotorch platform.
+MCP tools for LLM evaluation via the Flotorch platform.
 """
 
 __version__ = "1.0.0"
