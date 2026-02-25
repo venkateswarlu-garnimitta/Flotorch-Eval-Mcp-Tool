@@ -7,10 +7,12 @@ MCP tools for LLM evaluation via the Flotorch platform.
 __version__ = "1.0.0"
 
 from flotorch_eval_mcp.config import (
+    DEFAULT_EVALUATION_ENGINE,
     EvaluationEngine,
     EvaluationType,
     get_flotorch_credentials,
     get_metrics_for_evaluation_type,
+    resolve_metrics,
 )
 from flotorch_eval_mcp.evaluator import (
     KBRetrievalError,
@@ -29,10 +31,12 @@ from flotorch_eval_mcp.utils import (
 
 __all__ = [
     "__version__",
+    "DEFAULT_EVALUATION_ENGINE",
     "EvaluationEngine",
     "EvaluationType",
     "get_flotorch_credentials",
     "get_metrics_for_evaluation_type",
+    "resolve_metrics",
     "KBRetrievalError",
     "LLMGenerationError",
     "generate_dataset_parallel",

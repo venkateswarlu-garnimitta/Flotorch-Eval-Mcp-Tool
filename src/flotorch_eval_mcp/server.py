@@ -10,27 +10,26 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
-# FastMCP imports
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-# Configure logging
 logging.basicConfig(
     format="[%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Heavy dependencies (imported at startup for fast tool calls)
 try:
     from flotorch_eval_mcp.config import (
+        DEFAULT_EVALUATION_ENGINE,
         EvaluationType,
         get_flotorch_credentials,
-        get_metrics_for_evaluation_type,
+        resolve_metrics,
     )
     from flotorch_eval_mcp.evaluator import (
         KBRetrievalError,
@@ -53,9 +52,6 @@ except ImportError as e:
     IMPORTS_SUCCESSFUL = False
     logger.warning(f"Failed to import heavy dependencies: {e}. Tool calls will return error messages.")
 
-# Create FastMCP server
-# Disable host-header validation to allow deployment behind reverse proxies
-# (e.g. Hugging Face Spaces, load balancers) where Host differs from origin
 mcp = FastMCP(
     "Flotorch Evaluation",
     instructions=(
@@ -66,7 +62,7 @@ mcp = FastMCP(
     json_response=True,
     streamable_http_path="/",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-    stateless_http=True,  # Required for HF Spaces / load balancers: no session affinity across instances
+    stateless_http=True,
 )
 
 
@@ -91,7 +87,6 @@ def _generate_comparison_summary(model_results: List[Dict], model_ids: List[str]
         "=" * 80,
     ]
 
-    # Extract metric keys from first result
     first_metrics = model_results[0]
     metric_keys = list(first_metrics.keys())
 
@@ -120,36 +115,31 @@ async def _evaluate_model_for_comparison(
     user_prompt_template: str,
     evaluation_model: str,
     embedding_model: str,
-    evaluation_type: str,
     evaluation_engine: str,
-    query_level_metrics: bool,
-    gateway_metrics: bool,
     max_concurrent: int,
     metrics: List,
+    gateway_metrics: bool = False,
 ) -> Dict:
-    """Evaluate a single model for comparison, with robust error handling."""
+    """Evaluate a single model for comparison."""
     try:
-        # Initialize LLM
         llm = FlotorchLLM(
             model_id=model_id,
             api_key=api_key,
             base_url=base_url,
         )
 
-        # Generate dataset
         evaluation_items_list = await generate_dataset_parallel(
             ground_truth=gt_data,
             llm=llm,
             system_prompt=system_prompt,
             user_prompt_template=user_prompt_template,
             max_concurrent=max_concurrent,
-            return_headers=gateway_metrics,
+            gateway_metrics=gateway_metrics,
         )
 
         if not evaluation_items_list:
             raise ValueError("No evaluation items generated")
 
-        # Run evaluation
         try:
             eval_results = await run_evaluation(
                 evaluation_items=evaluation_items_list,
@@ -164,11 +154,9 @@ async def _evaluate_model_for_comparison(
             logger.error(f"Evaluation failed for model {model_id}: {e}")
             raise ValueError(f"Model evaluation failed: {format_api_error(e)}") from e
 
-        # Extract overall metrics for comparison
         overall_metrics = eval_results.get("evaluation_metrics", {})
-
-        # Enrich with gateway metadata
-        enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
+        if gateway_metrics:
+            enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
 
         return {
             "metrics": overall_metrics,
@@ -189,48 +177,44 @@ async def _evaluate_single_model(
     embedding_model: str,
     evaluation_type: str,
     evaluation_engine: str,
-    query_level_metrics: bool,
-    gateway_metrics: bool,
     max_concurrent: int,
+    metrics: List,
+    gateway_metrics: bool,
     api_key: str,
     base_url: str,
 ) -> Dict[str, Any]:
-    """Evaluate a single model (fallback from comparison)."""
+    """Evaluate a single model (fallback from comparison when only one model)."""
     try:
-        # Initialize LLM
         llm = FlotorchLLM(
             model_id=inference_model,
             api_key=api_key,
             base_url=base_url,
         )
 
-        # Generate dataset
         evaluation_items_list = await generate_dataset_parallel(
             ground_truth=ground_truth,
             llm=llm,
             system_prompt=system_prompt,
             user_prompt_template=user_prompt_template,
             max_concurrent=max_concurrent,
-            return_headers=gateway_metrics,
+            gateway_metrics=gateway_metrics,
         )
 
         if not evaluation_items_list:
             return {"error": "No evaluation items generated"}
 
-        # Run evaluation
         eval_results = await run_evaluation(
             evaluation_items=evaluation_items_list,
             api_key=api_key,
             base_url=base_url,
             evaluation_model=evaluation_model,
             embedding_model=embedding_model,
-            metrics=get_metrics_for_evaluation_type(evaluation_type, MetricKey),
+            metrics=metrics,
             evaluation_engine=evaluation_engine,
         )
 
-        # Enrich with gateway metadata
-        enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
-
+        if gateway_metrics:
+            enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
         return eval_results
 
     except Exception as e:
@@ -242,7 +226,6 @@ def _extract_headers_from_context(ctx: Optional[Context]) -> Dict[str, str]:
     """Extract HTTP headers from request context as lowercase dict."""
     if not ctx:
         return {}
-
     try:
         request_context = ctx.request_context
         if hasattr(request_context, "request") and request_context.request:
@@ -250,9 +233,25 @@ def _extract_headers_from_context(ctx: Optional[Context]) -> Dict[str, str]:
             return {name.lower(): request.headers[name] for name in request.headers.keys()}
     except Exception as e:
         logger.debug(f"Could not extract headers: {e}")
-
     return {}
 
+
+def _parse_metric_names(metrics_json: str) -> Optional[List[str]]:
+    """Parse optional JSON metrics list. Returns None if empty/unset."""
+    if not metrics_json:
+        return None
+    try:
+        parsed = json.loads(metrics_json) if isinstance(metrics_json, str) else metrics_json
+        if isinstance(parsed, list) and parsed:
+            return [str(m) for m in parsed]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def evaluate_llm(
@@ -260,7 +259,8 @@ async def evaluate_llm(
     evaluation_model: str,
     embedding_model: str = "flotorch/text-embedding-model",
     evaluation_type: str = "normal",
-    evaluation_engine: str = "deepeval",
+    evaluation_engine: str = DEFAULT_EVALUATION_ENGINE,
+    metrics: str = "",
     query_level_metrics: bool = False,
     gateway_metrics: bool = False,
     ctx: Context = None,
@@ -269,82 +269,72 @@ async def evaluate_llm(
     Evaluate pre-computed LLM responses using question-answer pairs.
 
     Args:
-        evaluation_items: JSON string - list of evaluation items with question, generated_answer, expected_answer
+        evaluation_items: JSON string - list of objects with question, generated_answer, expected_answer, and optional context list
         evaluation_model: Flotorch model ID for evaluation scoring (required)
         embedding_model: Flotorch embedding model ID (default: flotorch/text-embedding-model)
         evaluation_type: "normal" or "rag" (default: normal)
         evaluation_engine: "deepeval" or "ragas" (default: deepeval)
+        metrics: Optional JSON array of metric names to evaluate (e.g. ["faithfulness", "answer_relevance"]). If omitted, uses defaults for the evaluation_type.
         query_level_metrics: Include per-query breakdown (default: false)
-        gateway_metrics: Include gateway metrics (input/output tokens) (default: false)
+        gateway_metrics: Include performance data - tokens, latency per query and aggregated totals (default: false)
 
     Returns:
-        Formatted evaluation report
+        Evaluation results with overall metrics and optionally per-query scores and performance data
     """
     if not IMPORTS_SUCCESSFUL:
         return {"error": "Required dependencies are not installed. Please install flotorch, flotorch-eval packages."}
 
-    # Get credentials
     try:
         headers = _extract_headers_from_context(ctx)
         api_key, base_url = get_flotorch_credentials(headers)
     except ValueError as e:
         return {"error": f"API credentials invalid or missing. {e}"}
 
-    # Parse evaluation items
     try:
         items_data = json.loads(evaluation_items) if isinstance(evaluation_items, str) else evaluation_items
     except json.JSONDecodeError as e:
         return {"error": f"evaluation_items must be valid JSON. Parse error: {e}"}
 
-    # Validate structure
     is_valid, error_msg = validate_evaluation_items(items_data)
     if not is_valid:
         return {"error": error_msg}
 
-    # Build EvaluationItem list
     evaluation_items_list: List[EvaluationItem] = []
     for item in items_data:
-        question = item.get("question", "")
-        generated_answer = item.get("generated_answer", "")
-        expected_answer = item.get("expected_answer", "")
         context = item.get("context", [])
-        metadata = item.get("metadata", {})
-
-        # Normalize context
         if not isinstance(context, list):
             context = [str(context)] if context else []
-
-        # Normalize metadata
+        metadata = item.get("metadata", {})
         if metadata and isinstance(metadata, dict):
             metadata = {str(k): v for k, v in metadata.items()}
 
         evaluation_items_list.append(
             EvaluationItem(
-                question=question,
-                generated_answer=generated_answer,
-                expected_answer=expected_answer,
+                question=item.get("question", ""),
+                generated_answer=item.get("generated_answer", ""),
+                expected_answer=item.get("expected_answer", ""),
                 context=context,
                 metadata=metadata,
             )
         )
 
-    # Get appropriate metrics for evaluation type
-    metrics = get_metrics_for_evaluation_type(evaluation_type, MetricKey)
+    try:
+        resolved = resolve_metrics(_parse_metric_names(metrics), evaluation_type, MetricKey)
+    except ValueError as e:
+        return {"error": str(e)}
 
     try:
-        # Run evaluation (uses evaluation_model and embedding_model)
         eval_results = await run_evaluation(
             evaluation_items=evaluation_items_list,
             api_key=api_key,
             base_url=base_url,
             evaluation_model=evaluation_model,
             embedding_model=embedding_model,
-            metrics=metrics,
+            metrics=resolved,
             evaluation_engine=evaluation_engine,
         )
-
-        enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
-
+        if gateway_metrics:
+            enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
         return eval_results
 
     except Exception as e:
@@ -352,7 +342,7 @@ async def evaluate_llm(
         return {
             "error": f"Evaluation failed. {format_api_error(e)}",
             "evaluation_model": evaluation_model,
-            "embedding_model": embedding_model
+            "embedding_model": embedding_model,
         }
 
 
@@ -365,7 +355,8 @@ async def evaluate_rag(
     system_prompt: str,
     user_prompt_template: str,
     embedding_model: str = "flotorch/text-embedding-model",
-    evaluation_engine: str = "deepeval",
+    evaluation_engine: str = DEFAULT_EVALUATION_ENGINE,
+    metrics: str = "",
     query_level_metrics: bool = False,
     gateway_metrics: bool = False,
     max_concurrent: int = 10,
@@ -382,38 +373,34 @@ async def evaluate_rag(
         system_prompt: System prompt for the inference LLM (required)
         user_prompt_template: User prompt template with {context} and {question} placeholders (required)
         embedding_model: Flotorch embedding model ID (default: flotorch/text-embedding-model)
-        evaluation_engine: Evaluation engine - "deepeval" or "ragas" (default: deepeval)
+        evaluation_engine: "deepeval" or "ragas" (default: deepeval)
+        metrics: Optional JSON array of metric names (e.g. ["faithfulness", "hallucination"]). If omitted, uses all RAG metrics.
         query_level_metrics: Include per-query breakdown (default: false)
-        gateway_metrics: Include gateway metrics (input/output tokens) (default: false)
-        max_concurrent: Maximum concurrent operations (default: 10)
+        gateway_metrics: Include performance data - tokens, latency per query and aggregated totals (default: false)
+        max_concurrent: Maximum concurrent operations per phase (default: 10)
 
     Returns:
-        Formatted evaluation report with RAG metrics
+        Evaluation results with RAG metrics and optionally per-query scores and performance data
     """
     if not IMPORTS_SUCCESSFUL:
         return {"error": "Required dependencies are not installed. Please install flotorch, flotorch-eval packages."}
 
-    # Get credentials
     try:
         headers = _extract_headers_from_context(ctx)
         api_key, base_url = get_flotorch_credentials(headers)
     except ValueError as e:
         return {"error": f"API credentials invalid or missing. {e}"}
 
-    # Parse ground truth
     try:
         gt_data = json.loads(ground_truth) if isinstance(ground_truth, str) else ground_truth
     except json.JSONDecodeError as e:
         return {"error": f"ground_truth must be valid JSON. Parse error: {e}"}
 
-    # Validate structure
     is_valid, error_msg = validate_ground_truth_data(gt_data)
     if not is_valid:
         return {"error": error_msg}
 
-    # Import SDK components (lazy loading for faster startup)
     try:
-        # Initialize inference LLM and knowledge base
         inference_llm = FlotorchLLM(
             model_id=inference_model,
             api_key=api_key,
@@ -427,11 +414,12 @@ async def evaluate_rag(
     except Exception as e:
         return {"error": f"Failed to initialize inference model or knowledge base. {format_api_error(e)}"}
 
-    # Get RAG metrics
-    metrics = get_metrics_for_evaluation_type(EvaluationType.RAG.value, MetricKey)
+    try:
+        resolved = resolve_metrics(_parse_metric_names(metrics), EvaluationType.RAG.value, MetricKey)
+    except ValueError as e:
+        return {"error": str(e)}
 
     try:
-        # Generate dataset in parallel (retrieve + generate)
         logger.info(f"Generating RAG dataset for {len(gt_data)} questions...")
         try:
             evaluation_items_list = await generate_rag_dataset_parallel(
@@ -441,7 +429,7 @@ async def evaluate_rag(
                 system_prompt=system_prompt,
                 user_prompt_template=user_prompt_template,
                 max_concurrent=max_concurrent,
-                return_headers=gateway_metrics,
+                gateway_metrics=gateway_metrics,
             )
         except LLMGenerationError as e:
             return (
@@ -459,9 +447,8 @@ async def evaluate_rag(
         if not evaluation_items_list:
             return "Error: No evaluation items generated"
 
-        logger.info(f"Dataset generated. Running evaluation...")
+        logger.info("Dataset generated. Running evaluation...")
 
-        # Run evaluation (uses evaluation_model and embedding_model)
         try:
             eval_results = await run_evaluation(
                 evaluation_items=evaluation_items_list,
@@ -469,7 +456,7 @@ async def evaluate_rag(
                 base_url=base_url,
                 evaluation_model=evaluation_model,
                 embedding_model=embedding_model,
-                metrics=metrics,
+                metrics=resolved,
                 evaluation_engine=evaluation_engine,
             )
         except Exception as e:
@@ -479,9 +466,8 @@ async def evaluate_rag(
                 f"Evaluation model: {evaluation_model}, Embedding model: {embedding_model}"
             )
 
-        # Inject per-query gateway metadata (flotorch_eval drops it from question results)
-        enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
-
+        if gateway_metrics:
+            enrich_eval_results_with_gateway_metadata(eval_results, evaluation_items_list)
         return eval_results
 
     except Exception as e:
@@ -498,7 +484,8 @@ async def compare_llm_models(
     user_prompt_template: str,
     embedding_model: str = "flotorch/text-embedding-model",
     evaluation_type: str = "normal",
-    evaluation_engine: str = "deepeval",
+    evaluation_engine: str = DEFAULT_EVALUATION_ENGINE,
+    metrics: str = "",
     query_level_metrics: bool = False,
     gateway_metrics: bool = False,
     max_concurrent: int = 10,
@@ -506,6 +493,10 @@ async def compare_llm_models(
 ) -> Dict[str, Any]:
     """
     Compare multiple LLM models on the same ground truth dataset.
+
+    All models are evaluated in full parallel — dataset generation and evaluation
+    run concurrently across models. Within each model, questions are processed
+    in parallel up to max_concurrent.
 
     Args:
         ground_truth: JSON string - list of {question, answer} or {question, answer, context} objects
@@ -516,24 +507,23 @@ async def compare_llm_models(
         embedding_model: Flotorch embedding model ID (default: flotorch/text-embedding-model)
         evaluation_type: "normal" or "rag" (default: normal)
         evaluation_engine: "deepeval" or "ragas" (default: deepeval)
+        metrics: Optional JSON array of metric names (e.g. ["faithfulness", "answer_relevance"]). If omitted, uses defaults for the evaluation_type.
         query_level_metrics: Include per-query breakdown (default: false)
-        gateway_metrics: Include gateway metrics (input/output tokens) (default: false)
+        gateway_metrics: Include performance data - tokens, latency per query and aggregated totals (default: false)
         max_concurrent: Maximum concurrent calls per model (default: 10)
 
     Returns:
-        Comparison report showing metrics across models
+        Comparison report with per-model metrics and optionally performance data and summary
     """
     if not IMPORTS_SUCCESSFUL:
         return {"error": "Required dependencies are not installed. Please install flotorch, flotorch-eval packages."}
 
-    # Get credentials
     try:
         headers = _extract_headers_from_context(ctx)
         api_key, base_url = get_flotorch_credentials(headers)
     except ValueError as e:
         return {"error": f"API credentials invalid or missing. {e}"}
 
-    # Parse inputs
     try:
         gt_data = json.loads(ground_truth) if isinstance(ground_truth, str) else ground_truth
     except json.JSONDecodeError as e:
@@ -544,95 +534,69 @@ async def compare_llm_models(
     except json.JSONDecodeError as e:
         return {"error": f"inference_models must be valid JSON array. Parse error: {e}"}
 
-    # Validate
     is_valid, error_msg = validate_ground_truth_data(gt_data)
     if not is_valid:
         return {"error": error_msg}
 
     if not isinstance(models_list, list) or not models_list:
-        return "Error: inference_models must be a non-empty list of model IDs"
+        return {"error": "inference_models must be a non-empty list of model IDs"}
 
-    # Import SDK components (lazy loading for faster startup)
     try:
-        from flotorch.sdk.llm import FlotorchLLM
-        from flotorch_eval.llm_eval import MetricKey
-    except ImportError as e:
-        return {"error": f"Missing required packages: {e}. Run: pip install flotorch flotorch-eval"}
+        resolved = resolve_metrics(_parse_metric_names(metrics), evaluation_type, MetricKey)
+    except ValueError as e:
+        return {"error": str(e)}
 
-    # Get appropriate metrics
-    metrics = get_metrics_for_evaluation_type(evaluation_type, MetricKey)
-
-    # If only one model, evaluate normally instead of comparison
     if len(models_list) == 1:
-        single_model = models_list[0]
         return await _evaluate_single_model(
             ground_truth=gt_data,
-            inference_model=single_model,
+            inference_model=models_list[0],
             evaluation_model=evaluation_model,
             system_prompt=system_prompt,
             user_prompt_template=user_prompt_template,
             embedding_model=embedding_model,
             evaluation_type=evaluation_type,
             evaluation_engine=evaluation_engine,
-            query_level_metrics=query_level_metrics,
-            gateway_metrics=gateway_metrics,
             max_concurrent=max_concurrent,
+            metrics=resolved,
+            gateway_metrics=gateway_metrics,
             api_key=api_key,
             base_url=base_url,
         )
 
-    # Build comparison report header
-    report_lines = [
-        "=" * 80,
-        f"LLM COMPARISON REPORT ({evaluation_engine.upper()} ENGINE)",
-        f"Evaluation Type: {evaluation_type.upper()}",
-        f"Models: {len(models_list)} | Questions: {len(gt_data)}",
-        "=" * 80,
-        "",
-    ]
-
-    model_results = []
-
-    # Evaluate each model in parallel
-    semaphore = asyncio.Semaphore(min(len(models_list), 3))  # Limit concurrent model evaluations
-
+    # All models evaluated in full parallel (no model-level semaphore)
     async def evaluate_model(model_id: str) -> dict:
-        async with semaphore:
-            return await _evaluate_model_for_comparison(
-                model_id=model_id,
-                gt_data=gt_data,
-                api_key=api_key,
-                base_url=base_url,
-                system_prompt=system_prompt,
-                user_prompt_template=user_prompt_template,
-                evaluation_model=evaluation_model,
-                embedding_model=embedding_model,
-                evaluation_type=evaluation_type,
-                evaluation_engine=evaluation_engine,
-                query_level_metrics=query_level_metrics,
-                gateway_metrics=gateway_metrics,
-                max_concurrent=max_concurrent,
-                metrics=metrics,
-            )
+        return await _evaluate_model_for_comparison(
+            model_id=model_id,
+            gt_data=gt_data,
+            api_key=api_key,
+            base_url=base_url,
+            system_prompt=system_prompt,
+            user_prompt_template=user_prompt_template,
+            evaluation_model=evaluation_model,
+            embedding_model=embedding_model,
+            evaluation_engine=evaluation_engine,
+            max_concurrent=max_concurrent,
+            metrics=resolved,
+            gateway_metrics=gateway_metrics,
+        )
 
     tasks = [evaluate_model(model_id) for model_id in models_list]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Build structured results
-    comparison_results = {}
+    comparison_results: Dict[str, Any] = {}
+    model_metrics = []
 
     for i, result in enumerate(results):
         model_id = models_list[i]
-
         if isinstance(result, Exception):
             comparison_results[model_id] = {"error": format_api_error(result)}
         else:
             comparison_results[model_id] = result["eval_results"]
-            model_results.append(result["metrics"])
+            model_metrics.append(result["metrics"])
 
-    # Add comparison summary if we have multiple successful results
-    if len(model_results) > 1:
-        comparison_results["comparison_summary"] = _generate_comparison_summary(model_results, models_list)
+    if len(model_metrics) > 1:
+        successful_ids = [models_list[i] for i, r in enumerate(results) if not isinstance(r, Exception)]
+        comparison_results["comparison_summary"] = _generate_comparison_summary(model_metrics, successful_ids)
 
     return comparison_results
 
@@ -643,48 +607,68 @@ def list_evaluation_metrics() -> str:
     List all available evaluation metrics and their descriptions.
 
     Returns:
-        JSON string with metric information
+        JSON with metric names, descriptions, and supported engines
     """
     metrics = {
-        "normal_evaluation": {
-            "description": "Metrics for standard LLM evaluation (no context)",
-            "metrics": [
-                {
-                    "name": "answer_relevance",
-                    "description": "Does the answer directly address the question?"
-                }
-            ]
+        "available_metrics": [
+            {
+                "name": "faithfulness",
+                "description": "Is the answer factually consistent with the retrieved context?",
+                "engines": ["deepeval", "ragas"],
+                "requires_context": True,
+            },
+            {
+                "name": "answer_relevance",
+                "description": "Does the answer directly address the question?",
+                "engines": ["deepeval", "ragas"],
+                "requires_context": False,
+            },
+            {
+                "name": "context_relevancy",
+                "description": "Is the retrieved context relevant to the question?",
+                "engines": ["deepeval"],
+                "requires_context": True,
+            },
+            {
+                "name": "context_precision",
+                "description": "Is the retrieved context precise and focused?",
+                "engines": ["deepeval", "ragas"],
+                "requires_context": True,
+            },
+            {
+                "name": "context_recall",
+                "description": "Does the context cover the information needed to answer?",
+                "engines": ["deepeval"],
+                "requires_context": True,
+            },
+            {
+                "name": "hallucination",
+                "description": "Does the answer contain fabricated information not in the context?",
+                "engines": ["deepeval"],
+                "requires_context": True,
+            },
+        ],
+        "default_engine": DEFAULT_EVALUATION_ENGINE,
+        "supported_engines": ["deepeval", "ragas"],
+        "defaults": {
+            "normal": ["answer_relevance"],
+            "rag": [
+                "faithfulness",
+                "context_relevancy",
+                "context_precision",
+                "context_recall",
+                "answer_relevance",
+                "hallucination",
+            ],
         },
-        "rag_evaluation": {
-            "description": "Metrics for RAG system evaluation (with context)",
+        "performance_metrics": {
+            "description": "Automatically included in all evaluation results",
             "metrics": [
-                {
-                    "name": "faithfulness",
-                    "description": "Is the answer supported by the retrieved context?"
-                },
-                {
-                    "name": "context_relevancy",
-                    "description": "Is the retrieved context relevant to the question?"
-                },
-                {
-                    "name": "context_precision",
-                    "description": "Is the retrieved context precise and focused?"
-                },
-                {
-                    "name": "context_recall",
-                    "description": "Does the context cover the information needed to answer?"
-                },
-                {
-                    "name": "answer_relevance",
-                    "description": "Does the answer directly address the question?"
-                },
-                {
-                    "name": "hallucination",
-                    "description": "Does the answer contain fabricated information not in context?"
-                }
-            ]
+                "latency_ms (per-query wall-clock latency)",
+                "input_tokens / output_tokens (per-query token counts)",
+                "avg_latency_ms, total_latency_ms (aggregated in gateway_metrics)",
+            ],
         },
-        "supported_engines": ["deepeval", "ragas"]
     }
 
     return json.dumps(metrics, indent=2)

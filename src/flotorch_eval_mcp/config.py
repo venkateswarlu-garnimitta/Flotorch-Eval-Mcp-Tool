@@ -1,24 +1,37 @@
 """
 Configuration for the Flotorch Evaluation MCP Server.
 
-Provides credential resolution, evaluation types, and metric selection.
+Provides credential resolution, evaluation types, metric selection,
+and user-facing metric resolution.
 """
 
 import os
 from enum import Enum
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 class EvaluationType(Enum):
     """Supported evaluation types."""
-    NORMAL = "normal"  # No context, answer relevance only
-    RAG = "rag"  # Full RAG metrics with context
+    NORMAL = "normal"
+    RAG = "rag"
 
 
 class EvaluationEngine(Enum):
     """Supported evaluation engines."""
     DEEPEVAL = "deepeval"
     RAGAS = "ragas"
+
+
+METRIC_NAME_MAP = {
+    "faithfulness": "FAITHFULNESS",
+    "answer_relevance": "ANSWER_RELEVANCE",
+    "context_relevancy": "CONTEXT_RELEVANCY",
+    "context_precision": "CONTEXT_PRECISION",
+    "context_recall": "CONTEXT_RECALL",
+    "hallucination": "HALLUCINATION",
+}
+
+DEFAULT_EVALUATION_ENGINE = "deepeval"
 
 
 def get_flotorch_credentials(headers: Optional[dict] = None) -> Tuple[str, str]:
@@ -28,15 +41,6 @@ def get_flotorch_credentials(headers: Optional[dict] = None) -> Tuple[str, str]:
     Priority:
     1. HTTP headers (X-Flotorch-Api-Key, X-Flotorch-Base-Url)
     2. Environment variables (FLOTORCH_API_KEY, FLOTORCH_BASE_URL)
-
-    Args:
-        headers: Optional dict of HTTP headers (lowercase keys)
-
-    Returns:
-        Tuple of (api_key, base_url)
-
-    Raises:
-        ValueError: If credentials are not found
     """
     api_key = ""
     base_url = ""
@@ -52,7 +56,6 @@ def get_flotorch_credentials(headers: Optional[dict] = None) -> Tuple[str, str]:
             or headers.get("flotorch-base-url", "")
         )
 
-    # Fallback to environment variables
     api_key = (api_key or os.getenv("FLOTORCH_API_KEY", "")).strip()
     base_url = (base_url or os.getenv("FLOTORCH_BASE_URL", "")).strip()
 
@@ -71,20 +74,10 @@ def get_flotorch_credentials(headers: Optional[dict] = None) -> Tuple[str, str]:
 def get_metrics_for_evaluation_type(
     evaluation_type: str, metric_key_class: type
 ) -> list:
-    """
-    Return appropriate metrics based on evaluation type.
-
-    Args:
-        evaluation_type: Type of evaluation (normal/rag)
-        metric_key_class: MetricKey class from flotorch_eval
-
-    Returns:
-        List of metric keys appropriate for the evaluation type
-    """
+    """Return default metrics based on evaluation type."""
     eval_type = evaluation_type.lower().strip()
 
     if eval_type == EvaluationType.RAG.value:
-        # Full RAG metrics: faithfulness, context metrics, answer relevance, hallucination
         return [
             metric_key_class.FAITHFULNESS,
             metric_key_class.CONTEXT_RELEVANCY,
@@ -94,5 +87,41 @@ def get_metrics_for_evaluation_type(
             metric_key_class.HALLUCINATION,
         ]
     else:
-        # Normal evaluation: only answer relevance (no context-based metrics)
         return [metric_key_class.ANSWER_RELEVANCE]
+
+
+def resolve_metrics(
+    metric_names: Optional[List[str]],
+    evaluation_type: str,
+    metric_key_class: type,
+) -> list:
+    """
+    Resolve user-specified metric names to MetricKey values.
+
+    If metric_names is None or empty, falls back to the default set
+    for the given evaluation_type.
+
+    Accepts human-friendly names like "faithfulness", "answer_relevance",
+    "context-relevancy" (hyphens / spaces are normalised).
+
+    Raises:
+        ValueError: If any metric name is unrecognised.
+    """
+    if not metric_names:
+        return get_metrics_for_evaluation_type(evaluation_type, metric_key_class)
+
+    resolved = []
+    invalid = []
+    for name in metric_names:
+        key = name.lower().strip().replace(" ", "_").replace("-", "_")
+        attr_name = METRIC_NAME_MAP.get(key)
+        if attr_name and hasattr(metric_key_class, attr_name):
+            resolved.append(getattr(metric_key_class, attr_name))
+        else:
+            invalid.append(name)
+
+    if invalid:
+        available = list(METRIC_NAME_MAP.keys())
+        raise ValueError(f"Unknown metrics: {invalid}. Available: {available}")
+
+    return resolved if resolved else get_metrics_for_evaluation_type(evaluation_type, metric_key_class)

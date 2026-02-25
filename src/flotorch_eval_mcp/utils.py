@@ -125,15 +125,32 @@ def create_prompt_messages(
     ]
 
 
-def _compute_token_totals(evaluation_items: List[Any]) -> Dict[str, int]:
-    """Sum input and output tokens from evaluation item metadata."""
-    total_input, total_output = 0, 0
+def _compute_gateway_totals(evaluation_items: List[Any]) -> Dict[str, Any]:
+    """Aggregate tokens and latency across all evaluation items."""
+    total_input = 0
+    total_output = 0
+    latencies: list = []
+
     for item in evaluation_items or []:
         meta = getattr(item, "metadata", None) or {}
-        if isinstance(meta, dict):
-            total_input += int(meta.get("inputTokens") or meta.get("inputtokens") or 0)
-            total_output += int(meta.get("outputTokens") or meta.get("outputtokens") or 0)
-    return {"total_input_tokens": total_input, "total_output_tokens": total_output}
+        if not isinstance(meta, dict):
+            continue
+        total_input += int(meta.get("inputTokens") or meta.get("inputtokens") or 0)
+        total_output += int(meta.get("outputTokens") or meta.get("outputtokens") or 0)
+        lat = meta.get("latency_ms") or meta.get("x-gateway-total-latency")
+        if lat is not None:
+            latencies.append(float(lat))
+
+    totals: Dict[str, Any] = {
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+    }
+    if latencies:
+        totals["total_latency_ms"] = round(sum(latencies), 2)
+        totals["avg_latency_ms"] = round(sum(latencies) / len(latencies), 2)
+        totals["min_latency_ms"] = round(min(latencies), 2)
+        totals["max_latency_ms"] = round(max(latencies), 2)
+    return totals
 
 
 def enrich_eval_results_with_gateway_metadata(
@@ -141,62 +158,53 @@ def enrich_eval_results_with_gateway_metadata(
     evaluation_items: List[Any],
 ) -> None:
     """
-    Inject per-query gateway metadata and token totals.
+    Inject per-query gateway metadata, token totals, and latency stats.
+
     flotorch_eval drops EvaluationItem.metadata when building question results;
-    this restores it and adds total_input_tokens/total_output_tokens for display.
+    this restores it and adds aggregated gateway_metrics for display.
     """
-    # Add token totals for GATEWAY METRICS section (input/output only)
-    token_totals = _compute_token_totals(evaluation_items)
-    if token_totals.get("total_input_tokens") or token_totals.get("total_output_tokens"):
-        gw = eval_results.setdefault("gateway_metrics", {})
-        gw["total_input_tokens"] = token_totals["total_input_tokens"]
-        gw["total_output_tokens"] = token_totals["total_output_tokens"]
+    totals = _compute_gateway_totals(evaluation_items)
+    has_data = any(v for v in totals.values() if v)
+    if has_data:
+        eval_results["gateway_metrics"] = totals
+
     qlr = eval_results.get("question_level_results")
     if not qlr or not evaluation_items:
         return
     for i, result in enumerate(qlr):
-        if i < len(evaluation_items):
-            item = evaluation_items[i]
-            meta = getattr(item, "metadata", None) or {}
-            if meta and isinstance(meta, dict):
-                # Build readable per-query gateway metrics (flotorch_eval drops these)
-                display_meta = {}
-                if "x-total-tokens" in meta:
-                    display_meta["tokens"] = meta["x-total-tokens"]
-                if "x-gateway-total-latency" in meta:
-                    display_meta["latency_ms"] = meta["x-gateway-total-latency"]
-                if "x-total-cost" in meta:
-                    display_meta["cost"] = meta["x-total-cost"]
-                if "inputTokens" in meta:
-                    display_meta["input_tokens"] = meta["inputTokens"]
-                if "outputTokens" in meta:
-                    display_meta["output_tokens"] = meta["outputTokens"]
-                result["metadata"] = display_meta if display_meta else meta
+        if i >= len(evaluation_items):
+            break
+        item = evaluation_items[i]
+        meta = getattr(item, "metadata", None) or {}
+        if not meta or not isinstance(meta, dict):
+            continue
+        display_meta: Dict[str, Any] = {}
+        if "inputTokens" in meta:
+            display_meta["input_tokens"] = meta["inputTokens"]
+        if "outputTokens" in meta:
+            display_meta["output_tokens"] = meta["outputTokens"]
+        if "x-total-tokens" in meta:
+            display_meta["tokens"] = meta["x-total-tokens"]
+        if "latency_ms" in meta:
+            display_meta["latency_ms"] = meta["latency_ms"]
+        elif "x-gateway-total-latency" in meta:
+            display_meta["latency_ms"] = meta["x-gateway-total-latency"]
+        if "x-total-cost" in meta:
+            display_meta["cost"] = meta["x-total-cost"]
+        result["metadata"] = display_meta if display_meta else meta
 
 
 def format_evaluation_results(
     eval_results: Dict[str, Any],
     show_query_level: bool = False,
-    show_gateway: bool = False
 ) -> str:
-    """
-    Format evaluation results into a readable string report.
-
-    Args:
-        eval_results: Raw evaluation results dict
-        show_query_level: Include per-query metrics breakdown
-        show_gateway: Include gateway metrics (latency, cost, tokens)
-
-    Returns:
-        Formatted string report
-    """
+    """Format evaluation results into a readable string report."""
     lines = []
     lines.append("=" * 80)
     lines.append("EVALUATION RESULTS")
     lines.append("=" * 80)
     lines.append("")
 
-    # Overall metrics
     eval_metrics = eval_results.get("evaluation_metrics", {})
     if eval_metrics:
         lines.append("OVERALL METRICS:")
@@ -206,19 +214,22 @@ def format_evaluation_results(
                 lines.append(f"  {metric_name}: {value:.4f}")
         lines.append("")
 
-    # Gateway metrics (input/output tokens only)
-    if show_gateway:
-        gateway_metrics = eval_results.get("gateway_metrics", {})
+    gateway_metrics = eval_results.get("gateway_metrics", {})
+    if gateway_metrics:
+        lines.append("PERFORMANCE:")
+        lines.append("-" * 40)
         total_in = gateway_metrics.get("total_input_tokens", 0)
         total_out = gateway_metrics.get("total_output_tokens", 0)
         if total_in or total_out:
-            lines.append("GATEWAY METRICS:")
-            lines.append("-" * 40)
             lines.append(f"  total_input_tokens: {total_in:,}")
             lines.append(f"  total_output_tokens: {total_out:,}")
-            lines.append("")
+        if "avg_latency_ms" in gateway_metrics:
+            lines.append(f"  avg_latency_ms: {gateway_metrics['avg_latency_ms']}")
+            lines.append(f"  min_latency_ms: {gateway_metrics['min_latency_ms']}")
+            lines.append(f"  max_latency_ms: {gateway_metrics['max_latency_ms']}")
+            lines.append(f"  total_latency_ms: {gateway_metrics['total_latency_ms']}")
+        lines.append("")
 
-    # Query-level results
     if show_query_level:
         query_results = eval_results.get("question_level_results", [])
         if query_results:
@@ -236,12 +247,17 @@ def format_evaluation_results(
                         if isinstance(value, (int, float)):
                             lines.append(f"    {metric_name}: {value:.4f}")
 
-                if show_gateway:
-                    metadata = result.get("metadata", {})
-                    if metadata and ("input_tokens" in metadata or "output_tokens" in metadata or "tokens" in metadata):
-                        tok_in = metadata.get("input_tokens", metadata.get("inputTokens", "–"))
-                        tok_out = metadata.get("output_tokens", metadata.get("outputTokens", "–"))
-                        lines.append(f"  Tokens: input={tok_in}, output={tok_out}")
+                metadata = result.get("metadata", {})
+                if metadata:
+                    parts = []
+                    if "input_tokens" in metadata:
+                        parts.append(f"in={metadata['input_tokens']}")
+                    if "output_tokens" in metadata:
+                        parts.append(f"out={metadata['output_tokens']}")
+                    if "latency_ms" in metadata:
+                        parts.append(f"latency={metadata['latency_ms']}ms")
+                    if parts:
+                        lines.append(f"  Gateway: {', '.join(parts)}")
 
     lines.append("")
     lines.append("=" * 80)

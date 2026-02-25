@@ -7,6 +7,7 @@ and evaluation execution via flotorch-eval.
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from flotorch.sdk.llm import FlotorchLLM
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 class LLMGenerationError(Exception):
-    """Raised when LLM fails to generate answers. Stops experiment with reason."""
+    """Raised when LLM fails to generate answers."""
 
     def __init__(self, message: str, model_id: str = "", question: str = ""):
         self.model_id = model_id
@@ -52,7 +53,7 @@ class LLMGenerationError(Exception):
 
 
 class KBRetrievalError(Exception):
-    """Raised when knowledge base retrieval fails. Stops experiment with reason."""
+    """Raised when knowledge base retrieval fails."""
 
     def __init__(self, message: str, knowledge_base_id: str = "", question: str = ""):
         self.knowledge_base_id = knowledge_base_id
@@ -67,22 +68,13 @@ async def generate_answer_for_question(
     system_prompt: str,
     user_prompt_template: str,
     context: Optional[List[str]] = None,
-    return_headers: bool = False,
+    gateway_metrics: bool = False,
 ) -> EvaluationItem:
     """
     Generate answer for a single question using the LLM.
 
-    Args:
-        question: User question
-        expected_answer: Ground truth answer
-        llm: FlotorchLLM instance
-        system_prompt: System prompt for LLM
-        user_prompt_template: User prompt template
-        context: Optional context for RAG
-        return_headers: Whether to return headers for gateway metrics
-
-    Returns:
-        EvaluationItem with generated answer and metadata
+    When gateway_metrics is True, captures token counts and wall-clock
+    latency per call. Otherwise metadata is left empty.
     """
     messages = create_prompt_messages(
         system_prompt=system_prompt,
@@ -92,14 +84,21 @@ async def generate_answer_for_question(
     )
 
     try:
-        # Do NOT pass return_headers - FlotorchLLM returns LLMResponse (content, metadata).
-        # Passing return_headers can cause gateway to return different format → "too many values to unpack".
+        if gateway_metrics:
+            t0 = time.perf_counter()
+
         raw_result = await llm.ainvoke(messages=messages)
         generated_answer = getattr(raw_result, "content", str(raw_result))
-        metadata = llm_response_to_metadata(raw_result) if return_headers else {}
+
+        if gateway_metrics:
+            wall_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            metadata = llm_response_to_metadata(raw_result)
+            metadata["latency_ms"] = wall_latency_ms
+        else:
+            metadata = {}
     except Exception as e:
         logger.error(f"Failed to generate answer for question: {e}")
-        raise  # Re-raise so caller can stop experiment and report reason
+        raise
 
     return EvaluationItem(
         question=question,
@@ -117,25 +116,10 @@ async def retrieve_and_generate(
     llm: FlotorchLLM,
     system_prompt: str,
     user_prompt_template: str,
-    return_headers: bool = False,
+    gateway_metrics: bool = False,
 ) -> EvaluationItem:
-    """
-    Retrieve context from KB and generate answer for a single question.
-
-    Args:
-        question: User question
-        expected_answer: Ground truth answer
-        kb: FlotorchAsyncVectorStore instance
-        llm: FlotorchLLM instance
-        system_prompt: System prompt for LLM
-        user_prompt_template: User prompt template
-        return_headers: Whether to return headers for gateway metrics
-
-    Returns:
-        EvaluationItem with retrieved context, generated answer, and metadata
-    """
+    """Retrieve context from KB and generate answer for a single question."""
     try:
-        # Retrieve context from knowledge base
         search_results = await kb.search(query=question)
         context_texts = memory_utils.extract_vectorstore_texts(search_results)
     except Exception as e:
@@ -145,7 +129,6 @@ async def retrieve_and_generate(
             question=question,
         ) from e
 
-    # Generate answer with retrieved context
     return await generate_answer_for_question(
         question=question,
         expected_answer=expected_answer,
@@ -153,7 +136,7 @@ async def retrieve_and_generate(
         system_prompt=system_prompt,
         user_prompt_template=user_prompt_template,
         context=context_texts,
-        return_headers=return_headers,
+        gateway_metrics=gateway_metrics,
     )
 
 
@@ -163,21 +146,13 @@ async def generate_dataset_parallel(
     system_prompt: str,
     user_prompt_template: str,
     max_concurrent: int = 10,
-    return_headers: bool = False,
+    gateway_metrics: bool = False,
 ) -> List[EvaluationItem]:
     """
     Generate evaluation dataset in parallel for all questions.
 
-    Args:
-        ground_truth: List of {question, answer} dicts
-        llm: FlotorchLLM instance
-        system_prompt: System prompt for LLM
-        user_prompt_template: User prompt template
-        max_concurrent: Maximum concurrent LLM calls
-        return_headers: Whether to return headers for gateway metrics
-
-    Returns:
-        List of EvaluationItem objects
+    All questions are dispatched concurrently, bounded by max_concurrent.
+    Metadata (tokens, latency) is captured only when gateway_metrics is True.
     """
     semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -186,8 +161,6 @@ async def generate_dataset_parallel(
             question = qa.get("question", "")
             expected_answer = qa.get("answer", "")
             context = qa.get("context", [])
-
-            # Normalize context to list
             if not isinstance(context, list):
                 context = [str(context)] if context else []
 
@@ -198,15 +171,13 @@ async def generate_dataset_parallel(
                 system_prompt=system_prompt,
                 user_prompt_template=user_prompt_template,
                 context=context,
-                return_headers=return_headers,
+                gateway_metrics=gateway_metrics,
             )
             return idx, item
 
-    # Process all questions in parallel
     tasks = [process_with_semaphore(i, qa) for i, qa in enumerate(ground_truth)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Fail fast: if any LLM generation failed, stop and report reason
     for idx, result in enumerate(results):
         if isinstance(result, Exception):
             err_msg = str(result)
@@ -216,7 +187,6 @@ async def generate_dataset_parallel(
                 question=question,
             )
 
-    # Sort by index and extract items
     items_with_idx = [r for r in results if not isinstance(r, Exception)]
     items_with_idx.sort(key=lambda x: x[0])
     return [item for _, item in items_with_idx]
@@ -229,30 +199,18 @@ async def generate_rag_dataset_parallel(
     system_prompt: str,
     user_prompt_template: str,
     max_concurrent: int = 10,
-    return_headers: bool = False,
+    gateway_metrics: bool = False,
 ) -> List[EvaluationItem]:
     """
     Generate RAG evaluation dataset with maximum parallelism.
 
-    Optimized two-phase approach:
-    1. Retrieve contexts for ALL questions in parallel (up to max_concurrent)
-    2. Generate answers for ALL questions in parallel (up to max_concurrent)
+    Two-phase pipeline:
+    1. Retrieve contexts for ALL questions in parallel
+    2. Generate answers for ALL questions in parallel
 
-    This maximizes concurrency compared to sequential retrieve+generate per question.
-
-    Args:
-        ground_truth: List of {question, answer} dicts
-        kb: FlotorchAsyncVectorStore instance
-        llm: FlotorchLLM instance
-        system_prompt: System prompt for LLM
-        user_prompt_template: User prompt template
-        max_concurrent: Maximum concurrent operations per phase
-        return_headers: Whether to return headers for gateway metrics
-
-    Returns:
-        List of EvaluationItem objects with retrieved context
+    Metadata (tokens, latency) is captured only when gateway_metrics is True.
     """
-    # Phase 1: Retrieve contexts for all questions in parallel
+    # Phase 1: Retrieve contexts in parallel
     logger.info(f"Phase 1: Retrieving contexts for {len(ground_truth)} questions (max_concurrent={max_concurrent})...")
     retrieval_semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -260,7 +218,6 @@ async def generate_rag_dataset_parallel(
         async with retrieval_semaphore:
             question = qa.get("question", "")
             expected_answer = qa.get("answer", "")
-
             try:
                 search_results = await kb.search(query=question)
                 context_texts = memory_utils.extract_vectorstore_texts(search_results)
@@ -275,28 +232,24 @@ async def generate_rag_dataset_parallel(
     retrieval_tasks = [retrieve_context(i, qa) for i, qa in enumerate(ground_truth)]
     retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
 
-    # Process retrieval results and prepare for generation
     questions_with_context = []
     failed_retrievals = []
 
     for result in retrieval_results:
         if isinstance(result, Exception):
-            # This shouldn't happen with our error handling above
             continue
-
         idx, question, expected_answer, context_texts, error = result
         if error:
             failed_retrievals.append((idx, error))
         else:
             questions_with_context.append((idx, question, expected_answer, context_texts))
 
-    # Fail fast on retrieval errors
     if failed_retrievals:
         idx, error = failed_retrievals[0]
         question = ground_truth[idx].get("question", "")[:80]
         raise KBRetrievalError(str(error), question=question) from error
 
-    # Phase 2: Generate answers for all questions in parallel
+    # Phase 2: Generate answers in parallel
     logger.info(f"Phase 2: Generating answers for {len(questions_with_context)} questions (max_concurrent={max_concurrent})...")
     generation_semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -310,7 +263,7 @@ async def generate_rag_dataset_parallel(
                     system_prompt=system_prompt,
                     user_prompt_template=user_prompt_template,
                     context=context_texts,
-                    return_headers=return_headers,
+                    gateway_metrics=gateway_metrics,
                 )
                 return idx, item
             except Exception as e:
@@ -324,22 +277,17 @@ async def generate_rag_dataset_parallel(
         generate_answer(idx, question, expected_answer, context_texts)
         for idx, question, expected_answer, context_texts in questions_with_context
     ]
-
     generation_results = await asyncio.gather(*generation_tasks, return_exceptions=True)
 
-    # Process generation results
     items_with_idx = []
     for result in generation_results:
         if isinstance(result, Exception):
             if isinstance(result, LLMGenerationError):
                 raise result
-            # This shouldn't happen with our error handling
             continue
-
         idx, item = result
         items_with_idx.append((idx, item))
 
-    # Sort by original index and return
     items_with_idx.sort(key=lambda x: x[0])
     return [item for _, item in items_with_idx]
 
