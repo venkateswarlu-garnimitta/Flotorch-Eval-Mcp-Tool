@@ -66,7 +66,7 @@ mcp = FastMCP(
 )
 
 
-@mcp.custom_route("/.well-known/flotorch-mcp", methods=["GET"])
+@mcp.custom_route("/flotorch-eval/mcp", methods=["GET"])
 async def discovery(_request: Request) -> JSONResponse:
     """Discovery endpoint for transport detection."""
     return JSONResponse({
@@ -675,7 +675,7 @@ def list_evaluation_metrics() -> str:
 
 
 async def main() -> None:
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 8081))
     host = os.getenv("HOST", "0.0.0.0")
 
     mcp.settings.host = host
@@ -684,7 +684,7 @@ async def main() -> None:
 
     logger.info(
         f"Flotorch Evaluation MCP Server starting on http://{host}:{port}\n"
-        "Streamable HTTP at / | Discovery at /.well-known/flotorch-mcp"
+        "Streamable HTTP at / | Discovery at /flotorch-eval/mcp"
     )
 
     await mcp.run_streamable_http_async()

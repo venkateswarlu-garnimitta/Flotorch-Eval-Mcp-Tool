@@ -1,6 +1,3 @@
-# Flotorch Evaluation MCP Server - Docker Compose
-# Use for: AWS EC2, local development, or any Docker host
-
 services:
   flotorch-eval-mcp:
     build:
@@ -10,16 +7,14 @@ services:
     container_name: flotorch-eval-mcp-server
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8081:8081"
     environment:
-      - PORT=8080
+      - PORT=8081
       - HOST=0.0.0.0
-      - LOG_LEVEL=INFO
-      # Flotorch credentials (use env file or override for production)
       - FLOTORCH_API_KEY=${FLOTORCH_API_KEY:-}
       - FLOTORCH_BASE_URL=${FLOTORCH_BASE_URL:-https://gateway.flotorch.cloud}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/.well-known/flotorch-mcp')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/flotorch-eval/mcp')"]
       interval: 30s
       timeout: 10s
       retries: 3

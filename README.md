@@ -1,16 +1,8 @@
----
-title: Flotorch Evaluation MCP Server
-emoji: 📊
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-suggested_hardware: cpu-upgrade
----
-
 # Flotorch Evaluation MCP Server
 
-MCP server for LLM evaluation on the Flotorch platform. Supports standard evaluation, RAG evaluation with knowledge base retrieval, and multi-model comparison.
+MCP server for LLM evaluation on the Flotorch platform. It supports standard evaluation, RAG evaluation with knowledge-base retrieval, and multi-model comparison. Designed for production deployment (e.g. on AWS) behind a gateway or load balancer.
+
+---
 
 ## Quick Start
 
@@ -20,22 +12,24 @@ pip install -e .
 python -m flotorch_eval_mcp
 ```
 
-Server runs at `http://0.0.0.0:8080`.
+The server listens on `http://0.0.0.0:8081` by default.
+
+---
 
 ## Configuration
 
-**Environment**
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | 8080 | Server port |
+| `PORT` | 8081 | Server port |
 | `HOST` | 0.0.0.0 | Bind address |
-| `FLOTORCH_API_KEY` | — | Flotorch API key (required) |
-| `FLOTORCH_BASE_URL` | — | Flotorch gateway URL (required) |
+| `FLOTORCH_API_KEY` | — | Flotorch API key (required at runtime via header or env) |
+| `FLOTORCH_BASE_URL` | — | Flotorch gateway URL (required at runtime via header or env) |
 
-**MCP client headers**: `X-Flotorch-Api-Key`, `X-Flotorch-Base-Url`
+Credentials can be supplied via HTTP headers: `X-Flotorch-Api-Key`, `X-Flotorch-Base-Url`.
 
-**Gateway timeouts**: Evaluations are long-running (up to 50 Q/A pairs across all tools). Set `metadata.timeout` and `metadata.sse_read_timeout` to **600000** (10 minutes). The gateway uses a fixed timeout per request; completion before the limit is unaffected.
+**Timeouts (gateway / MCP client):** Evaluations can run for several minutes. Set `timeout` and `sse_read_timeout` to **18000000** (ms) in the gateway and MCP client configuration so long-running requests are not closed prematurely.
+
+---
 
 ## Tools
 
@@ -44,117 +38,131 @@ Server runs at `http://0.0.0.0:8080`.
 | `evaluate_llm` | Evaluate pre-computed Q&A pairs against selected metrics |
 | `evaluate_rag` | Full RAG pipeline: retrieve from KB, generate answers, evaluate |
 | `compare_llm_models` | Compare multiple models in parallel on the same dataset |
-| `list_evaluation_metrics` | List available metrics with descriptions and engine support |
+| `list_evaluation_metrics` | List available metrics and engine support |
 
-### Common Parameters
+**Common parameters:** `evaluation_engine` (default: deepeval), `metrics` (optional JSON array), `max_concurrent` (default: 10), `query_level_metrics`, `gateway_metrics`.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `evaluation_engine` | `deepeval` | Evaluation engine (`deepeval` or `ragas`). DeepEval is recommended for speed and broadest metric coverage. |
-| `metrics` | (auto) | Optional JSON array of metric names (e.g. `["faithfulness", "answer_relevance"]`). If omitted, uses defaults for the evaluation type. |
-| `max_concurrent` | `10` | Maximum concurrent LLM calls per model during dataset generation. |
-| `query_level_metrics` | `false` | Include per-query metric breakdown in results. |
-| `gateway_metrics` | `false` | Include performance data (tokens, latency) per query and aggregated totals. Only computed when enabled. |
+---
 
 ## Metrics
 
-All metrics can be selected individually via the `metrics` parameter.
+Available metrics (selectable via the `metrics` parameter): `faithfulness`, `answer_relevance`, `context_relevancy`, `context_precision`, `context_recall`, `hallucination`. Defaults depend on evaluation type (normal vs RAG). When `gateway_metrics` is true, results include token counts and latency (per-query and aggregated).
 
-| Metric | Engines | Requires Context | Description |
-|--------|---------|:-:|-------------|
-| `faithfulness` | deepeval, ragas | Yes | Is the answer factually consistent with the context? |
-| `answer_relevance` | deepeval, ragas | No | Does the answer directly address the question? |
-| `context_relevancy` | deepeval | Yes | Is the retrieved context relevant to the question? |
-| `context_precision` | deepeval, ragas | Yes | Is the retrieved context precise and focused? |
-| `context_recall` | deepeval | Yes | Does the context cover the information needed? |
-| `hallucination` | deepeval | Yes | Does the answer contain fabricated information? |
+---
 
-**Defaults**:
-- **Normal** evaluation: `answer_relevance`
-- **RAG** evaluation: all six metrics above
+## Agent Goal and System Prompt
 
-### Performance Metrics
+The agent should run exactly one evaluation tool per user request, with correctly prepared inputs, and return the tool result.
 
-Available when `gateway_metrics` is set to `true`:
+**Tool selection:** Use `compare_llm_models` to compare models on a shared Q&A set; `evaluate_llm` for pre-computed answers; `evaluate_rag` for retrieve-then-generate-then-evaluate; `list_evaluation_metrics` to list metrics.
 
-- **Per-query**: `latency_ms` (wall-clock), `input_tokens`, `output_tokens`
-- **Aggregated**: `avg_latency_ms`, `min_latency_ms`, `max_latency_ms`, `total_latency_ms`, `total_input_tokens`, `total_output_tokens`
+**Data preparation:** `ground_truth` must be a JSON array of `{"question": "...", "answer": "..."}`. Use only ASCII in JSON (no Unicode symbols or control characters). Required parameters include `evaluation_model`, `embedding_model` (e.g. `flotorch/embed`), `system_prompt`, and `user_prompt_template` (with `{question}` placeholder; for RAG, also `{context}`).
 
-## Parallel Execution
+**Example system prompt for the agent:**
 
-The server is optimised for throughput:
+```text
+You are a Flotorch Evaluation Agent. Run LLM evaluations by calling the correct MCP tool once with valid parameters, then return the tool result.
 
-- **Dataset generation**: All questions are dispatched concurrently, bounded by `max_concurrent` (default 10).
-- **RAG pipeline**: Two-phase parallelism — retrieval for all questions in parallel, then answer generation for all questions in parallel.
-- **Model comparison**: All models are evaluated in full parallel with no model-level concurrency limit. Each model independently parallelises its questions up to `max_concurrent`.
+Rules: (1) Choose the right tool: compare_llm_models, evaluate_llm, evaluate_rag, or list_evaluation_metrics. (2) For compare_llm_models, provide ground_truth (JSON array of {"question","answer"}), inference_models (JSON array of model IDs), evaluation_model, embedding_model, system_prompt, user_prompt_template. (3) Use only ASCII in JSON. (4) Call exactly one tool once; after receiving the result, return it to the user. (5) If the user does not ask for an evaluation, respond briefly and ask what they need. (6) Default evaluation_model: flotorch/gpt-4-1-mini; default embedding_model: flotorch/embed.
+```
+
+---
 
 ## MCP Configuration
 
-**Gateway template** (transport and metadata):
+**Gateway / tool metadata (timeouts in ms):**
 
 ```ts
 {
   templateId: "flotorch-eval",
   name: "Flotorch Evaluation MCP",
-  description: "LLM evaluation: standard and RAG evaluation, multi-model comparison on the Flotorch platform. Credentials are passed per request via headers: X-Flotorch-Api-Key, X-Flotorch-Base-Url.",
+  description: "LLM evaluation: standard and RAG evaluation, multi-model comparison. Credentials via headers: X-Flotorch-Api-Key, X-Flotorch-Base-Url.",
   category: "Evaluation",
   icon: "i-lucide-clipboard-check",
-  url: "", // Set in database (e.g. deployed server URL)
+  url: "",
   transport: "HTTP_STREAMABLE" as const,
   metadata: {
     transport: "HTTP_STREAMABLE" as const,
-    timeout: 600000,
-    sse_read_timeout: 600000,
+    timeout: 18000000,
+    sse_read_timeout: 18000000,
     terminate_on_close: true,
   },
   requiredFields: [],
   baseHeaders: {},
-  isEnabled: false, // Enable after URL is configured in database
+  isEnabled: false,
 }
 ```
 
-**Local MCP client** (JSON):
+**Local MCP client (JSON):**
 
 ```json
 {
   "transport": "HTTP_STREAMABLE",
-  "url": "http://localhost:8080",
+  "url": "http://localhost:8081",
   "headers": {
     "X-Flotorch-Api-Key": "your_api_key",
     "X-Flotorch-Base-Url": "https://gateway.flotorch.cloud"
   },
-  "timeout": 600000,
-  "sse_read_timeout": 600000
+  "timeout": 18000000,
+  "sse_read_timeout": 18000000
 }
 ```
 
-## Deployment
+**Timeout / connection issues:** If you see "Request timed out" or "Connection closed", ensure the gateway and the MCP client both use `timeout` and `sse_read_timeout` of **18000000** (ms). If the client expects seconds, use **18000**. Run a small test (e.g. 3–5 Q&A, one model) to confirm the tool works before scaling up.
 
-**Docker**
+---
+
+## Docker: Build and Verify
+
+**1. Build the image**
 
 ```bash
 docker build -t flotorch-eval-mcp .
-docker run -d -p 8080:8080 \
-  -e FLOTORCH_API_KEY=your_key \
-  -e FLOTORCH_BASE_URL=https://gateway.flotorch.cloud \
-  flotorch-eval-mcp
 ```
 
-**Hugging Face Spaces**: Use `deploy/huggingface/Dockerfile`; set `PORT=7860` and credentials in Space Variables.
+**2. Run the container**
 
-**EC2**: See `deploy/ec2/README.md`.
+```bash
+docker run -d -p 8081:8081 -e FLOTORCH_API_KEY=your_key -e FLOTORCH_BASE_URL=https://gateway.flotorch.cloud --name flotorch-eval-mcp flotorch-eval-mcp
+```
+
+**3. Verify the server**
+
+```bash
+curl -s http://localhost:8081/flotorch-eval/mcp
+```
+
+Expected: JSON with `"transport": "HTTP_STREAMABLE"` and a short message. A healthy container passes the Docker HEALTHCHECK (discovery endpoint returns 200).
+
+**PowerShell (Windows):** Use `;` instead of `\` for line continuation, or run the `docker run` command as a single line as above.
+
+**Optional – docker-compose:** The repo includes `docker-compose.yml` for convenience (e.g. `docker-compose up -d`). It is not required if you run the container with `docker run` or deploy via another orchestrator. You can remove `docker-compose.yml` if you do not use it.
+
+---
+
+## Example Agent Prompt (single line)
+
+Single-line prompt for an agent with access to this MCP tool (model comparison; use ASCII-only in JSON):
+
+```text
+Use compare_llm_models with ground_truth=[{"question":"What is the time complexity of binary search?","answer":"O(log n)."},{"question":"What does CAP theorem state?","answer":"You cannot have consistency, availability, and partition tolerance all at once."},{"question":"Prime factorization of 84?","answer":"2^2 * 3 * 7."}], inference_models=["flotorch/nova-pro","flotorch/gemini-flash"], evaluation_model="flotorch/gpt-4-1-mini", embedding_model="flotorch/embed", system_prompt="You are a precise assistant. Answer concisely.", user_prompt_template="Question: {question}".
+```
+
+---
 
 ## Project Structure
 
 ```
 src/flotorch_eval_mcp/
-├── config.py      # Credentials, metrics config, metric resolution
-├── evaluator.py   # Parallel dataset generation, evaluation orchestration
+├── config.py      # Credentials, metrics, metric resolution
+├── evaluator.py   # Dataset generation, evaluation orchestration
 ├── server.py      # FastMCP server and tool definitions
-└── utils.py       # Validation, formatting, gateway metadata enrichment
+└── utils.py       # Validation, formatting, gateway metadata
 ```
+
+---
 
 ## Requirements
 
 - Python 3.11+
-- flotorch, flotorch-eval, mcp
+- flotorch, flotorch-eval, mcp (see `requirements.txt`)
