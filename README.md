@@ -1,3 +1,19 @@
+---
+title: Flotorch Evaluation MCP
+emoji: 📊
+sdk: docker
+app_port: 8081
+short_description: MCP server for LLM evaluation on Flotorch — standard eval, RAG eval, multi-model comparison.
+colorFrom: blue
+colorTo: indigo
+tags:
+  - mcp
+  - llm
+  - evaluation
+  - flotorch
+  - rag
+---
+
 # Flotorch Evaluation MCP Server
 
 MCP server for LLM evaluation on the Flotorch platform. It supports standard evaluation, RAG evaluation with knowledge-base retrieval, and multi-model comparison. Designed for production deployment (e.g. on AWS) behind a gateway or load balancer.
