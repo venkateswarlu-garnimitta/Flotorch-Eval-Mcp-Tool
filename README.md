@@ -3,7 +3,7 @@ title: Flotorch Evaluation MCP
 emoji: 📊
 sdk: docker
 app_port: 8081
-short_description: MCP server for LLM evaluation on Flotorch — standard eval, RAG eval, multi-model comparison.
+short_description: MCP server for LLM eval on Flotorch: standard, RAG, multi-model.
 colorFrom: blue
 colorTo: indigo
 tags:
